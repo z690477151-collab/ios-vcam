@@ -4,8 +4,9 @@
 #import <substrate.h>
 #import "MediaManager.h"
 
-// 自定义穿透Window（iOS16 有效拦截hitTest）
+// 自定义穿透Window
 @interface VCamOverlayWindow : UIWindow
+@property (nonatomic, assign) BOOL isShowingAlert; // 标记是否正在弹出弹窗
 @end
 @implementation VCamOverlayWindow
 - (BOOL)isPointHitButtonArea:(CGPoint)point {
@@ -21,7 +22,11 @@
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    // 点击不在按钮区域，直接返回nil，触摸穿透下层App
+    // 如果正在弹出Alert，不做穿透拦截，正常接收所有触摸
+    if (self.isShowingAlert) {
+        return [super hitTest:point withEvent:event];
+    }
+    // 无弹窗状态：仅按钮区域响应，其余透传
     if (![self isPointHitButtonArea:point]) {
         return nil;
     }
@@ -45,10 +50,10 @@
 @end
 
 // ============================================================================
-// MARK: - 全局状态（原版无改动）
+// MARK: - 全局状态
 // ============================================================================
 static BOOL g_vcamEnabled = NO;
-static UIWindow *g_overlayWindow = nil;
+static VCamOverlayWindow *g_overlayWindow = nil; // 改为自定义窗口类型
 static UIButton *g_floatButton = nil;
 
 // ============================================================================
@@ -92,17 +97,17 @@ static void setupFloatButton() {
         initWithTarget:g_floatButton action:@selector(handleTap:)];
     [g_floatButton addGestureRecognizer:tap];
     
-    // iOS16 专用穿透窗口
+    // 使用自定义穿透窗口
     g_overlayWindow = [[VCamOverlayWindow alloc] initWithFrame:screen];
+    // 默认低层级，空白区域透传
     g_overlayWindow.windowLevel = UIWindowLevelStatusBar - 1;
+    g_overlayWindow.isShowingAlert = NO;
     g_overlayWindow.hidden = NO;
     g_overlayWindow.backgroundColor = [UIColor clearColor];
     
     VCamRootView *rootView = [[VCamRootView alloc] initWithFrame:g_overlayWindow.bounds];
     rootView.backgroundColor = [UIColor clearColor];
-    // 关键：整个背景视图关闭交互，只有按钮可点击
-    rootView.userInteractionEnabled = NO;
-    g_floatButton.userInteractionEnabled = YES;
+    // 移除 userInteractionEnabled=NO，改用hitTest精准控制
     [rootView addSubview:g_floatButton];
     
     UIViewController *rootVC = [[UIViewController alloc] init];
@@ -182,6 +187,10 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
     UIViewController *topVC = findTopViewController();
     if (!topVC) return;
     
+    // ========== 弹窗前：提升窗口层级，关闭穿透逻辑 ==========
+    g_overlayWindow.isShowingAlert = YES;
+    g_overlayWindow.windowLevel = UIWindowLevelAlert + 1;
+    
     UIAlertController *alert = [UIAlertController 
         alertControllerWithTitle:@"VCam" 
         message:g_vcamEnabled ? @"虚拟相机已启用" : @"虚拟相机已关闭"
@@ -214,12 +223,17 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
         }
     }]];
     
-    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
+        // ========== 弹窗关闭后：恢复低层级，重新开启空白区域穿透 ==========
+        g_overlayWindow.isShowingAlert = NO;
+        g_overlayWindow.windowLevel = UIWindowLevelStatusBar - 1;
+    }]];
     
     if (alert.popoverPresentationController) {
         alert.popoverPresentationController.sourceView = gesture.view;
         alert.popoverPresentationController.sourceRect = gesture.view.bounds;
     }
+    
     [topVC presentViewController:alert animated:YES completion:nil];
 }
 
@@ -270,7 +284,7 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
 %end // VCamHooks group
 
 // ============================================================================
-// MARK: - 构造函数 原版无修改
+// MARK: - 构造函数
 // ============================================================================
 %ctor {
     @autoreleasepool {
