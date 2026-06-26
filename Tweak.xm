@@ -4,12 +4,26 @@
 #import <substrate.h>
 #import "MediaManager.h"
 
-// 自定义穿透Window
 @interface VCamOverlayWindow : UIWindow
-@property (nonatomic, assign) BOOL isShowingAlert;
 @end
 @implementation VCamOverlayWindow
-- (BOOL)isPointHitButtonArea:(CGPoint)point {
+
+// 判断屏幕坐标点是否命中系统弹窗（Alert/ActionSheet）
+- (BOOL)isPointOnSystemAlert:(CGPoint)point {
+    for (UIWindow *win in [UIApplication sharedApplication].windows) {
+        if (win == self) continue;
+        // 弹窗窗口特征：层级为UIWindowLevelAlert
+        if (win.windowLevel == UIWindowLevelAlert || win.windowLevel > UIWindowLevelAlert) {
+            if (CGRectContainsPoint(win.bounds, point)) {
+                return YES;
+            }
+        }
+    }
+    return NO;
+}
+
+// 判断点是否悬浮按钮区域
+- (BOOL)isPointOnFloatButton:(CGPoint)point {
     if (!self.rootViewController) return NO;
     UIView *rootV = self.rootViewController.view;
     for (UIView *sub in rootV.subviews) {
@@ -22,19 +36,19 @@
 }
 
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    // 弹窗展示期间：不拦截任何触摸，保证ActionSheet可点击
-    if (self.isShowingAlert) {
+    // 场景1：点击位置存在系统弹窗，全部放行，不拦截任何触摸
+    if ([self isPointOnSystemAlert:point]) {
         return [super hitTest:point withEvent:event];
     }
-    // 平时无弹窗：仅按钮区域响应，空白透传底层
-    if (![self isPointHitButtonArea:point]) {
-        return nil;
+    // 场景2：无弹窗，仅按钮区域响应，空白透传下层
+    if ([self isPointOnFloatButton:point]) {
+        return [super hitTest:point withEvent:event];
     }
-    return [super hitTest:point withEvent:event];
+    // 空白区域，触摸穿透
+    return nil;
 }
 @end
 
-// 根视图兜底穿透
 @interface VCamRootView : UIView
 @end
 @implementation VCamRootView
@@ -50,14 +64,14 @@
 @end
 
 // ============================================================================
-// MARK: - 全局状态
+// MARK: 全局状态
 // ============================================================================
 static BOOL g_vcamEnabled = NO;
 static VCamOverlayWindow *g_overlayWindow = nil;
 static UIButton *g_floatButton = nil;
 
 // ============================================================================
-// MARK: - 悬浮按钮 UI
+// MARK: 悬浮按钮
 // ============================================================================
 @interface VCamFloatButton : UIButton
 @property (nonatomic, assign) CGPoint initialCenter;
@@ -68,14 +82,6 @@ static UIButton *g_floatButton = nil;
 static void setupFloatButton(void);
 static void handlePanGesture(UIPanGestureRecognizer *gesture);
 static void handleTapGesture(UITapGestureRecognizer *gesture);
-static void resetOverlayWindowState(void);
-
-// 弹窗完全消失后再执行复位
-static void resetOverlayWindowState() {
-    if (!g_overlayWindow) return;
-    g_overlayWindow.isShowingAlert = NO;
-    g_overlayWindow.windowLevel = UIWindowLevelStatusBar - 1;
-}
 
 static void setupFloatButton() {
     if (g_floatButton) return;
@@ -97,17 +103,15 @@ static void setupFloatButton() {
     [g_floatButton setTitle:@"📷" forState:UIControlStateNormal];
     g_floatButton.titleLabel.font = [UIFont systemFontOfSize:24];
     
-    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] 
-        initWithTarget:g_floatButton action:@selector(handlePan:)];
+    UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:g_floatButton action:@selector(handlePan:)];
     [g_floatButton addGestureRecognizer:pan];
     
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] 
-        initWithTarget:g_floatButton action:@selector(handleTap:)];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:g_floatButton action:@selector(handleTap:)];
     [g_floatButton addGestureRecognizer:tap];
     
+    // 固定高层级，全程不变
     g_overlayWindow = [[VCamOverlayWindow alloc] initWithFrame:screen];
-    g_overlayWindow.windowLevel = UIWindowLevelStatusBar - 1;
-    g_overlayWindow.isShowingAlert = NO;
+    g_overlayWindow.windowLevel = UIWindowLevelAlert + 1;
     g_overlayWindow.hidden = NO;
     g_overlayWindow.backgroundColor = [UIColor clearColor];
     
@@ -119,10 +123,8 @@ static void setupFloatButton() {
     rootVC.view = rootView;
     g_overlayWindow.rootViewController = rootVC;
     
-    class_addMethod([g_floatButton class], @selector(handlePan:), 
-                    (IMP)handlePanGesture, "v@:@");
-    class_addMethod([g_floatButton class], @selector(handleTap:), 
-                    (IMP)handleTapGesture, "v@:@");
+    class_addMethod([g_floatButton class], @selector(handlePan:), (IMP)handlePanGesture, "v@:@");
+    class_addMethod([g_floatButton class], @selector(handleTap:), (IMP)handleTapGesture, "v@:@");
 }
 
 static void handlePanGesture(UIPanGestureRecognizer *gesture) {
@@ -160,26 +162,18 @@ static UIViewController *findTopViewController(void) {
 
 @interface VCamImagePickerControllerDelegate : NSObject <UINavigationControllerDelegate, UIImagePickerControllerDelegate>
 @end
-
 @implementation VCamImagePickerControllerDelegate
-- (void)imagePickerController:(UIImagePickerController *)picker 
-        didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info {
+- (void)imagePickerController:(UIImagePickerController *)picker didFinishPickingMediaWithInfo:(NSDictionary<UIImagePickerControllerInfoKey, id> *)info {
     [picker dismissViewControllerAnimated:YES completion:nil];
-    
     NSURL *url = info[UIImagePickerControllerMediaURL];
     if (!url) return;
-    
-    NSURL *tempURL = [NSURL fileURLWithPath:[NSTemporaryDirectory() 
-        stringByAppendingPathComponent:@"vcam_input.mp4"]];
+    NSURL *tempURL = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"vcam_input.mp4"]];
     [[NSFileManager defaultManager] removeItemAtURL:tempURL error:nil];
     [[NSFileManager defaultManager] copyItemAtURL:url toURL:tempURL error:nil];
-    
     [[MediaManager sharedManager] loadMediaFromURL:tempURL];
     g_vcamEnabled = YES;
     [[MediaManager sharedManager] start];
-    if (g_floatButton) {
-        g_floatButton.backgroundColor = [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:0.9];
-    }
+    if (g_floatButton) g_floatButton.backgroundColor = [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:0.9];
 }
 - (void)imagePickerControllerDidCancel:(UIImagePickerController *)picker {
     [picker dismissViewControllerAnimated:YES completion:nil];
@@ -192,21 +186,10 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
     UIViewController *topVC = findTopViewController();
     if (!topVC) return;
     
-    // 弹窗前切换高层级，全程保持到弹窗消失
-    g_overlayWindow.isShowingAlert = YES;
-    g_overlayWindow.windowLevel = UIWindowLevelAlert + 1;
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"VCam" message:g_vcamEnabled ? @"虚拟相机已启用" : @"虚拟相机已关闭" preferredStyle:UIAlertControllerStyleActionSheet];
     
-    UIAlertController *alert = [UIAlertController 
-        alertControllerWithTitle:@"VCam" 
-        message:g_vcamEnabled ? @"虚拟相机已启用" : @"虚拟相机已关闭"
-        preferredStyle:UIAlertControllerStyleActionSheet];
-    
-    // 选择视频
-    [alert addAction:[UIAlertAction actionWithTitle:@"选择视频" 
-        style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
-        if (![UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeSavedPhotosAlbum]) {
-            return;
-        }
+    [alert addAction:[UIAlertAction actionWithTitle:@"选择视频" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        if (![UIImagePickerController isSourceTypeAvailable:UIImagePickerControllerSourceTypeSavedPhotosAlbum]) return;
         UIImagePickerController *picker = [[UIImagePickerController alloc] init];
         picker.sourceType = UIImagePickerControllerSourceTypeSavedPhotosAlbum;
         picker.mediaTypes = @[@"public.movie"];
@@ -214,38 +197,23 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
         [topVC presentViewController:picker animated:YES completion:nil];
     }]];
     
-    // 开关虚拟相机
-    [alert addAction:[UIAlertAction actionWithTitle:g_vcamEnabled ? @"关闭虚拟相机" : @"开启虚拟相机" 
-        style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
+    [alert addAction:[UIAlertAction actionWithTitle:g_vcamEnabled ? @"关闭虚拟相机" : @"开启虚拟相机" style:UIAlertActionStyleDestructive handler:^(UIAlertAction *action) {
         g_vcamEnabled = !g_vcamEnabled;
-        if (g_floatButton) {
-            g_floatButton.backgroundColor = g_vcamEnabled 
-                ? [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:0.9]
-                : [UIColor colorWithRed:0.4 green:0.4 blue:0.4 alpha:0.9];
-        }
-        if (g_vcamEnabled) {
-            [[MediaManager sharedManager] start];
-        } else {
-            [[MediaManager sharedManager] stop];
-        }
+        if (g_floatButton) g_floatButton.backgroundColor = g_vcamEnabled ? [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:0.9] : [UIColor colorWithRed:0.4 green:0.4 blue:0.4 alpha:0.9];
+        g_vcamEnabled ? [[MediaManager sharedManager] start] : [[MediaManager sharedManager] stop];
     }]];
     
-    // 取消
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:nil]];
     
     if (alert.popoverPresentationController) {
         alert.popoverPresentationController.sourceView = gesture.view;
         alert.popoverPresentationController.sourceRect = gesture.view.bounds;
     }
-    
-    // 仅弹窗完全关闭动画结束后再恢复穿透模式
-    [topVC presentViewController:alert animated:YES completion:^{
-        resetOverlayWindowState();
-    }];
+    [topVC presentViewController:alert animated:YES completion:nil];
 }
 
 // ============================================================================
-// MARK: - AVCapture Hooks 完全原版无改动
+// MARK: AVCapture Hooks 完全不变
 // ============================================================================
 %group VCamHooks
 %hook AVCaptureSession
@@ -254,16 +222,11 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
 %end
 
 %hook AVCaptureVideoDataOutput
-- (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate 
-                          queue:(dispatch_queue_t)queue {
-    %orig;
-}
+- (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate queue:(dispatch_queue_t)queue { %orig; }
 %end
 
 %hook NSObject
-- (void)captureOutput:(AVCaptureOutput *)output 
-    didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer 
-           fromConnection:(AVCaptureConnection *)connection {
+- (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
     if (g_vcamEnabled && [[MediaManager sharedManager] isRunning]) {
         CMSampleBufferRef fakeFrame = [[MediaManager sharedManager] nextVideoFrame];
         if (fakeFrame) {
@@ -277,21 +240,16 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
 %end
 
 %hook AVCapturePhotoOutput
-- (void)capturePhotoWithSettings:(AVCapturePhotoSettings *)settings 
-                        delegate:(id<AVCapturePhotoCaptureDelegate>)delegate {
-    %orig;
-}
+- (void)capturePhotoWithSettings:(AVCapturePhotoSettings *)settings delegate:(id<AVCapturePhotoCaptureDelegate>)delegate { %orig; }
 %end
 
 %hook AVCaptureVideoPreviewLayer
-- (void)setSession:(AVCaptureSession *)session {
-    %orig;
-}
+- (void)setSession:(AVCaptureSession *)session { %orig; }
 %end
 %end
 
 // ============================================================================
-// MARK: Constructor
+// MARK: 构造函数
 // ============================================================================
 %ctor {
     @autoreleasepool {
@@ -300,11 +258,10 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
         if (![bundleID isEqualToString:@"com.apple.springboard"]) {
             %init(VCamHooks);
         }
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), 
-            dispatch_get_main_queue(), ^{
-                @autoreleasepool {
-                    setupFloatButton();
-                }
-            });
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            @autoreleasepool {
+                setupFloatButton();
+            }
+        });
     }
 }
