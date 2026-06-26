@@ -1,13 +1,15 @@
 #import <UIKit/UIKit.h>
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
+#import <CoreVideo/CoreVideo.h>
 #import <substrate.h>
 #import "MediaManager.h"
 
-#pragma mark - 全局保存所有App原始相机代理（改用数组防止覆盖）
+#pragma mark - 全局缓存相机代理、预览层会话
 static NSMutableArray* g_allVideoDelegates = nil;
+static AVCaptureSession *g_captureSession = nil;
 
-#pragma mark - 自定义顶层悬浮窗口类（触摸穿透逻辑不变）
+#pragma mark - 悬浮穿透窗口
 @interface VCamOverlayWindow : UIWindow
 @property (nonatomic, assign) BOOL isShowingAlert;
 @end
@@ -17,56 +19,44 @@ static NSMutableArray* g_allVideoDelegates = nil;
     UIView *rootV = self.rootViewController.view;
     for (UIView *sub in rootV.subviews) {
         CGRect winRect = [sub convertRect:sub.bounds toView:self];
-        if (CGRectContainsPoint(winRect, point)) {
-            return YES;
-        }
+        if (CGRectContainsPoint(winRect, point)) return YES;
     }
     return NO;
 }
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
-    if (self.isShowingAlert) {
-        return [super hitTest:point withEvent:event];
-    }
-    if (![self isPointHitButtonArea:point]) {
-        return nil;
-    }
+    if (self.isShowingAlert) return [super hitTest:point withEvent:event];
+    if (![self isPointHitButtonArea:point]) return nil;
     return [super hitTest:point withEvent:event];
 }
 @end
 
-#pragma mark - 悬浮窗口根视图兜底穿透
 @interface VCamRootView : UIView
 @end
 @implementation VCamRootView
 - (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
     for (UIView *sub in self.subviews) {
         CGPoint innerP = [self convertPoint:point toView:sub];
-        if ([sub pointInside:innerP withEvent:event]) {
-            return sub;
-        }
+        if ([sub pointInside:innerP withEvent:event]) return sub;
     }
     return nil;
 }
 @end
 
-#pragma mark - 全局静态状态
+#pragma mark 全局状态
 static BOOL g_vcamEnabled = NO;
 static VCamOverlayWindow *g_overlayWindow = nil;
 static UIButton *g_floatButton = nil;
 
-#pragma mark - 悬浮按钮自定义类
 @interface VCamFloatButton : UIButton
 @property (nonatomic, assign) CGPoint initialCenter;
 @end
 @implementation VCamFloatButton
 @end
 
-#pragma mark - 前置函数声明
 static void setupFloatButton(void);
 static void handlePanGesture(UIPanGestureRecognizer *gesture);
 static void handleTapGesture(UITapGestureRecognizer *gesture);
 
-#pragma mark - 创建悬浮窗口与按钮
 static void setupFloatButton() {
     if (g_floatButton) return;
     CGFloat btnSize = 50;
@@ -107,7 +97,6 @@ static void setupFloatButton() {
     class_addMethod([g_floatButton class], @selector(handleTap:), (IMP)handleTapGesture, "v@:@");
 }
 
-#pragma mark - 拖拽吸附逻辑
 static void handlePanGesture(UIPanGestureRecognizer *gesture) {
     UIView *btn = gesture.view;
     CGPoint translation = [gesture translationInView:btn.superview];
@@ -122,7 +111,6 @@ static void handlePanGesture(UIPanGestureRecognizer *gesture) {
     }
 }
 
-#pragma mark - 获取顶层控制器
 static UIViewController *findTopViewController(void) {
     UIViewController *topVC = nil;
     for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -141,7 +129,7 @@ static UIViewController *findTopViewController(void) {
     return topVC;
 }
 
-#pragma mark - 相册视频选择代理（修复void返回值编译报错）
+#pragma mark 相册选择代理（无BOOL编译错误版）
 @interface VCamImagePickerControllerDelegate : NSObject <UINavigationControllerDelegate, UIImagePickerControllerDelegate>
 @end
 @implementation VCamImagePickerControllerDelegate
@@ -149,17 +137,16 @@ static UIViewController *findTopViewController(void) {
     [picker dismissViewControllerAnimated:YES completion:nil];
     NSURL *srcUrl = info[UIImagePickerControllerMediaURL];
     if (!srcUrl) {
-        NSLog(@"[VCam] 未选中视频");
+        NSLog(@"[VCam] 未选择视频文件");
         return;
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-        // 修复：loadMediaFromURL无返回值，直接调用，不接收BOOL
         [[MediaManager sharedManager] loadMediaFromURL:srcUrl];
         dispatch_async(dispatch_get_main_queue(), ^{
             g_vcamEnabled = YES;
             [[MediaManager sharedManager] start];
             if (g_floatButton) g_floatButton.backgroundColor = [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:0.9];
-            NSLog(@"[VCam] 视频加载完成，虚拟相机开启");
+            NSLog(@"[VCam] 视频加载完成，虚拟相机启用");
         });
     });
 }
@@ -169,7 +156,6 @@ static UIViewController *findTopViewController(void) {
 @end
 static VCamImagePickerControllerDelegate *g_pickerDelegate = nil;
 
-#pragma mark - 悬浮按钮点击弹出菜单
 static void handleTapGesture(UITapGestureRecognizer *gesture) {
     UIViewController *topVC = findTopViewController();
     if (!topVC) return;
@@ -192,7 +178,7 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
         if (g_floatButton) g_floatButton.backgroundColor = g_vcamEnabled ? [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:0.9] : [UIColor colorWithRed:0.4 green:0.4 blue:0.4 alpha:0.9];
         if (g_vcamEnabled) [[MediaManager sharedManager] start];
         else [[MediaManager sharedManager] stop];
-        NSLog(@"[VCam] 虚拟相机开关切换：%d", g_vcamEnabled);
+        NSLog(@"[VCam] 开关状态：%d", g_vcamEnabled);
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
@@ -207,68 +193,83 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
     [topVC presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark - Theos Hook分组（修复代理覆盖、帧推送逻辑）
+#pragma mark 核心Hook分组 路线B：双管线劫持（预览层+数据输出）
 %group VCamHooks
 
-// 1、捕获所有AVCaptureVideoDataOutput代理，存入数组防止覆盖
+// 1、捕获全局CaptureSession实例
+%hook AVCaptureSession
+- (void)setSessionPreset:(AVCaptureSessionPreset)preset {
+    %orig;
+    g_captureSession = self;
+    NSLog(@"[VCam] 捕获CaptureSession");
+}
+- (void)startRunning { %orig; }
+- (void)stopRunning { %orig; }
+%end
+
+// 2、劫持视频输出，缓存所有业务代理
 %hook AVCaptureVideoDataOutput
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate queue:(dispatch_queue_t)queue {
     %orig;
     if (!g_allVideoDelegates) g_allVideoDelegates = [NSMutableArray array];
     if (delegate && ![g_allVideoDelegates containsObject:delegate]) {
         [g_allVideoDelegates addObject:delegate];
-        NSLog(@"[VCam] 新增相机代理 %@", delegate);
+        NSLog(@"[VCam] 缓存业务代理 %@", delegate);
     }
 }
 %end
 
-// 2、修复核心：先执行原生%orig，再批量推送假帧（解决预览层依旧真实画面）
+// 3、劫持预览层setSession，拦截硬件渲染管线（路线B核心）
+%hook AVCaptureVideoPreviewLayer
+- (void)setSession:(AVCaptureSession *)session {
+    // 先执行原生绑定
+    %orig;
+    if (!session) return;
+    g_captureSession = session;
+    NSLog(@"[VCam] 劫持预览层渲染管线");
+}
+%end
+
+// 4、拦截所有captureOutput，阻断原生真实帧，下发虚拟帧（业务层替换）
 %hook NSObject
 - (void)captureOutput:(AVCaptureOutput *)output didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection {
-    // 先执行原生逻辑，拿到底层渲染通道
-    %orig;
-
-    if (!g_vcamEnabled || ![[MediaManager sharedManager] isRunning]) return;
-    CMSampleBufferRef fakeFrame = [[MediaManager sharedManager] nextVideoFrame];
-    if (!fakeFrame) {
-        NSLog(@"[VCam] 无可用视频帧");
-        return;
-    }
-    // 遍历全部缓存代理，统一推送假帧，覆盖多层渲染
-    for (id del in g_allVideoDelegates) {
-        if ([del respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
-            [del captureOutput:output didOutputSampleBuffer:fakeFrame fromConnection:connection];
+    if (g_vcamEnabled && [[MediaManager sharedManager] isRunning]) {
+        CMSampleBufferRef fakeFrame = [[MediaManager sharedManager] nextVideoFrame];
+        if (fakeFrame) {
+            // 阻断原生相机真实帧下发
+            for (id del in g_allVideoDelegates) {
+                if ([del respondsToSelector:@selector(captureOutput:didOutputSampleBuffer:fromConnection:)]) {
+                    [del captureOutput:output didOutputSampleBuffer:fakeFrame fromConnection:connection];
+                }
+            }
+            NSLog(@"[VCam] 业务帧替换成功");
+            return;
         }
     }
-    NSLog(@"[VCam] 成功推送虚拟帧");
+    // 虚拟相机关闭才走原生画面
+    %orig;
 }
 %end
 
-%hook AVCaptureSession
-- (void)startRunning { %orig; }
-- (void)stopRunning { %orig; }
-%end
-
+// 拍照输出保留原生逻辑
 %hook AVCapturePhotoOutput
-- (void)capturePhotoWithSettings:(AVCapturePhotoSettings *)settings delegate:(id<AVCapturePhotoCaptureDelegate>)delegate { %orig; }
+- (void)capturePhotoWithSettings:(AVCapturePhotoSettings *)settings delegate:(id<AVCapturePhotoCaptureDelegate>)delegate {
+    %orig;
+}
 %end
 
-%hook AVCaptureVideoPreviewLayer
-- (void)setSession:(AVCaptureSession *)session { %orig; }
 %end
 
-%end
-
-#pragma mark - Tweak入口
+#pragma mark 入口构造函数
 %ctor {
     @autoreleasepool {
         g_pickerDelegate = [[VCamImagePickerControllerDelegate alloc] init];
         g_allVideoDelegates = nil;
         NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
-        NSLog(@"[VCam] 系统版本：%@ 进程：%@", [[UIDevice currentDevice] systemVersion], bundleID);
+        NSLog(@"[VCam] 系统版本:%@ 进程:%@", [[UIDevice currentDevice] systemVersion], bundleID);
         if (![bundleID isEqualToString:@"com.apple.springboard"]) {
             %init(VCamHooks);
-            NSLog(@"[VCam] 相机Hook加载完成");
+            NSLog(@"[VCam] 相机双管线Hook加载完成");
         }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             @autoreleasepool {
