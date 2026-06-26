@@ -141,7 +141,7 @@ static UIViewController *findTopViewController(void) {
     return topVC;
 }
 
-#pragma mark - 相册视频选择代理（修复解码延迟+沙盒权限提示）
+#pragma mark - 相册视频选择代理（修复void返回值编译报错）
 @interface VCamImagePickerControllerDelegate : NSObject <UINavigationControllerDelegate, UIImagePickerControllerDelegate>
 @end
 @implementation VCamImagePickerControllerDelegate
@@ -152,18 +152,14 @@ static UIViewController *findTopViewController(void) {
         NSLog(@"[VCam] 未选中视频");
         return;
     }
-    // 不拷贝临时文件，直接使用相册原始URL，规避无根沙盒读不到文件
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.6 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND, 0), ^{
-        BOOL loadOk = [[MediaManager sharedManager] loadMediaFromURL:srcUrl];
+        // 修复：loadMediaFromURL无返回值，直接调用，不接收BOOL
+        [[MediaManager sharedManager] loadMediaFromURL:srcUrl];
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (loadOk) {
-                g_vcamEnabled = YES;
-                [[MediaManager sharedManager] start];
-                if (g_floatButton) g_floatButton.backgroundColor = [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:0.9];
-                NSLog(@"[VCam] 视频加载成功，虚拟相机开启");
-            } else {
-                NSLog(@"[VCam] MediaManager加载视频失败，检查视频格式(MP4 YUV420)");
-            }
+            g_vcamEnabled = YES;
+            [[MediaManager sharedManager] start];
+            if (g_floatButton) g_floatButton.backgroundColor = [UIColor colorWithRed:0.2 green:0.8 blue:0.4 alpha:0.9];
+            NSLog(@"[VCam] 视频加载完成，虚拟相机开启");
         });
     });
 }
