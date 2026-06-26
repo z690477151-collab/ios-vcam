@@ -5,15 +5,7 @@
 #import <substrate.h>
 #import "MediaManager.h"
 
-static NSMutableArray* g_allVideoDelegates = nil;
-static BOOL g_vcamEnabled = NO;
-static VCamOverlayWindow *g_overlayWindow = nil;
-static UIButton *g_floatButton = nil;
-// 全局遮罩播放器层
-static AVPlayerLayer *g_maskPlayerLayer = nil;
-static AVPlayer *g_maskPlayer = nil;
-
-#pragma mark 悬浮穿透窗口
+#pragma mark 悬浮穿透窗口 【前置声明，解决类型未识别报错】
 @interface VCamOverlayWindow : UIWindow
 @property (nonatomic, assign) BOOL isShowingAlert;
 @end
@@ -52,11 +44,37 @@ static AVPlayer *g_maskPlayer = nil;
 @implementation VCamFloatButton
 @end
 
+#pragma mark 全局变量（现在VCamOverlayWindow已提前定义，不再报未知类型）
+static NSMutableArray* g_allVideoDelegates = nil;
+static BOOL g_vcamEnabled = NO;
+static VCamOverlayWindow *g_overlayWindow = nil;
+static UIButton *g_floatButton = nil;
+static AVPlayerLayer *g_maskPlayerLayer = nil;
+static AVPlayer *g_maskPlayer = nil;
+static NSURL *g_selectedVideoUrl = nil;
+
 static void setupFloatButton(void);
 static void handlePanGesture(UIPanGestureRecognizer *gesture);
 static void handleTapGesture(UITapGestureRecognizer *gesture);
 static void createFullScreenMask(NSURL *videoUrl);
 static void destroyMask();
+
+#pragma mark 兼容iOS13+ 替代废弃keyWindow，获取前台活跃窗口
+static UIWindow *getActiveKeyWindow(void) {
+    UIWindow *targetWin = nil;
+    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (scene.activationState == UISceneActivationStateForegroundActive) {
+            for (UIWindow *win in scene.windows) {
+                if (win.isKeyWindow && win.isHidden == NO) {
+                    targetWin = win;
+                    break;
+                }
+            }
+            if (targetWin) break;
+        }
+    }
+    return targetWin;
+}
 
 static void createFullScreenMask(NSURL *videoUrl) {
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -67,7 +85,10 @@ static void createFullScreenMask(NSURL *videoUrl) {
         [g_maskPlayer play];
         
         g_maskPlayerLayer = [AVPlayerLayer playerLayerWithPlayer:g_maskPlayer];
-        UIWindow *keyWin = [UIApplication sharedApplication].keyWindow;
+        // 替换废弃keyWindow调用
+        UIWindow *keyWin = getActiveKeyWindow();
+        if (!keyWin) return;
+        
         g_maskPlayerLayer.frame = keyWin.bounds;
         g_maskPlayerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
         g_maskPlayerLayer.zPosition = 9998; // 低于悬浮按钮9999，不遮挡浮球
@@ -162,8 +183,7 @@ static UIViewController *findTopViewController(void) {
     return topVC;
 }
 
-static NSURL *g_selectedVideoUrl = nil;
-
+#pragma mark 相册选择代理（无BOOL编译错误版）
 @interface VCamImagePickerControllerDelegate : NSObject <UINavigationControllerDelegate, UIImagePickerControllerDelegate>
 @end
 @implementation VCamImagePickerControllerDelegate
@@ -171,7 +191,7 @@ static NSURL *g_selectedVideoUrl = nil;
     [picker dismissViewControllerAnimated:YES completion:nil];
     NSURL *srcUrl = info[UIImagePickerControllerMediaURL];
     if (!srcUrl) {
-        NSLog(@"[VCam] 未选中视频");
+        NSLog(@"[VCam] 未选择视频文件");
         return;
     }
     g_selectedVideoUrl = srcUrl;
@@ -219,7 +239,7 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
             [[MediaManager sharedManager] stop];
             destroyMask();
         }
-        NSLog(@"[VCam] 虚拟相机开关切换：%d", g_vcamEnabled);
+        NSLog(@"[VCam] 开关状态：%d", g_vcamEnabled);
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
@@ -234,6 +254,7 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
     [topVC presentViewController:alert animated:YES completion:nil];
 }
 
+#pragma mark Hook分组
 %group VCamHooks
 %hook AVCaptureVideoDataOutput
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate queue:(dispatch_queue_t)queue {
@@ -272,6 +293,7 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
 %end
 %end
 
+#pragma mark 入口
 %ctor {
     @autoreleasepool {
         g_pickerDelegate = [[VCamImagePickerControllerDelegate alloc] init];
