@@ -5,7 +5,7 @@
 #import <substrate.h>
 #import "MediaManager.h"
 
-#pragma mark 悬浮穿透窗口 【前置声明，解决类型未识别报错】
+#pragma mark 悬浮穿透窗口 前置定义解决类型未识别报错
 @interface VCamOverlayWindow : UIWindow
 @property (nonatomic, assign) BOOL isShowingAlert;
 @end
@@ -44,7 +44,7 @@
 @implementation VCamFloatButton
 @end
 
-#pragma mark 全局变量（现在VCamOverlayWindow已提前定义，不再报未知类型）
+#pragma mark 全局变量
 static NSMutableArray* g_allVideoDelegates = nil;
 static BOOL g_vcamEnabled = NO;
 static VCamOverlayWindow *g_overlayWindow = nil;
@@ -59,7 +59,7 @@ static void handleTapGesture(UITapGestureRecognizer *gesture);
 static void createFullScreenMask(NSURL *videoUrl);
 static void destroyMask();
 
-#pragma mark 兼容iOS13+ 替代废弃keyWindow，获取前台活跃窗口
+#pragma mark 兼容iOS13+ 获取前台活跃窗口（废弃keyWindow替代方案）
 static UIWindow *getActiveKeyWindow(void) {
     UIWindow *targetWin = nil;
     for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -85,13 +85,12 @@ static void createFullScreenMask(NSURL *videoUrl) {
         [g_maskPlayer play];
         
         g_maskPlayerLayer = [AVPlayerLayer playerLayerWithPlayer:g_maskPlayer];
-        // 替换废弃keyWindow调用
         UIWindow *keyWin = getActiveKeyWindow();
         if (!keyWin) return;
         
         g_maskPlayerLayer.frame = keyWin.bounds;
         g_maskPlayerLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-        g_maskPlayerLayer.zPosition = 9998; // 低于悬浮按钮9999，不遮挡浮球
+        g_maskPlayerLayer.zPosition = 9998;
         [keyWin.layer addSublayer:g_maskPlayerLayer];
         NSLog(@"[VCam] 全屏视频遮罩创建完成，覆盖相机预览");
     });
@@ -183,7 +182,7 @@ static UIViewController *findTopViewController(void) {
     return topVC;
 }
 
-#pragma mark 相册选择代理（无BOOL编译错误版）
+#pragma mark 相册选择代理
 @interface VCamImagePickerControllerDelegate : NSObject <UINavigationControllerDelegate, UIImagePickerControllerDelegate>
 @end
 @implementation VCamImagePickerControllerDelegate
@@ -239,7 +238,7 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
             [[MediaManager sharedManager] stop];
             destroyMask();
         }
-        NSLog(@"[VCam] 开关状态：%d", g_vcamEnabled);
+        NSLog(@"[VCam] 虚拟相机开关切换：%d", g_vcamEnabled);
     }]];
 
     [alert addAction:[UIAlertAction actionWithTitle:@"取消" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action) {
@@ -254,7 +253,7 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
     [topVC presentViewController:alert animated:YES completion:nil];
 }
 
-#pragma mark Hook分组
+#pragma mark Hook分组（无私有框架）
 %group VCamHooks
 %hook AVCaptureVideoDataOutput
 - (void)setSampleBufferDelegate:(id<AVCaptureVideoDataOutputSampleBufferDelegate>)delegate queue:(dispatch_queue_t)queue {
@@ -293,7 +292,7 @@ static void handleTapGesture(UITapGestureRecognizer *gesture) {
 %end
 %end
 
-#pragma mark 入口
+#pragma mark 入口构造函数
 %ctor {
     @autoreleasepool {
         g_pickerDelegate = [[VCamImagePickerControllerDelegate alloc] init];
